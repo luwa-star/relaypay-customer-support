@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import axios from "axios";
 import Vapi from "@vapi-ai/web";
-import { Mic, MicOff, PhoneOff } from "lucide-react";
+import { Mic, MicOff, PhoneOff, Mail, CheckCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Status = "idle" | "connecting" | "active" | "error";
+type EmailStatus = "idle" | "sending" | "sent" | "error";
 
 interface Message {
 	id: number;
@@ -15,6 +17,26 @@ interface Message {
 }
 
 let _msgId = 0;
+
+// Discriminated union for the VAPI message shapes we handle.
+// No catch-all needed: the SDK types the `message` event as `any`, so passing
+// a narrower callback parameter is safe. Specific literals let TS narrow correctly.
+type VapiMessage =
+	| {
+			type: "transcript";
+			transcriptType: string;
+			role: string;
+			transcript: string;
+	  }
+	| {
+			type: "tool-calls";
+			toolCallList: Array<{ function?: { name?: string } }>;
+	  }
+	| { type: "function-call"; functionCall?: { name?: string } };
+
+function isValidEmail(value: string) {
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
 
 // ─── Logo ─────────────────────────────────────────────────────────────────────
 
@@ -47,7 +69,6 @@ function Orb({
 	const coreColor = isError ? "#DC2626" : agentSpeaking ? "#0EA5A0" : "#1B3A6B";
 	const ringColor = agentSpeaking ? "#0EA5A0" : "#1B3A6B";
 
-	// Volume drives outer ring expansion (0 → no expansion, 1 → 55% expansion)
 	const ringScale1 = 1 + volume * 0.3;
 	const ringScale2 = 1 + volume * 0.55;
 
@@ -65,7 +86,6 @@ function Orb({
 							: "Listening"
 						: "Inactive"
 			}>
-			{/* Outer volume-reactive ring */}
 			{isActive && !isError && (
 				<div
 					className="absolute inset-0 rounded-full"
@@ -77,8 +97,6 @@ function Orb({
 					}}
 				/>
 			)}
-
-			{/* Inner volume-reactive ring */}
 			{isActive && !isError && (
 				<div
 					className="absolute inset-0 rounded-full"
@@ -90,16 +108,12 @@ function Orb({
 					}}
 				/>
 			)}
-
-			{/* Connecting ping ring (Tailwind built-in animate-ping) */}
 			{status === "connecting" && (
 				<div
 					className="absolute inset-0 rounded-full animate-ping"
 					style={{ backgroundColor: "#1B3A6B", opacity: 0.12 }}
 				/>
 			)}
-
-			{/* Core orb */}
 			<div
 				className="relative rounded-full flex items-center justify-center transition-colors duration-300"
 				style={{
@@ -111,13 +125,11 @@ function Orb({
 						: "0 4px 20px rgba(0,0,0,0.10)",
 				}}>
 				{status === "connecting" ? (
-					/* Spinner */
 					<div
 						className="rounded-full border-[3px] border-white border-t-transparent animate-spin"
 						style={{ width: 30, height: 30 }}
 					/>
 				) : (
-					/* Microphone icon */
 					<svg
 						xmlns="http://www.w3.org/2000/svg"
 						className="w-9 h-9 text-white"
@@ -133,6 +145,137 @@ function Orb({
 	);
 }
 
+// ─── Email capture form ────────────────────────────────────────────────────────
+
+function EmailCapture({
+	callId,
+	onSuccess,
+}: {
+	callId: string | null;
+	onSuccess: () => void;
+}) {
+	const [email, setEmail] = useState("");
+	const [touched, setTouched] = useState(false);
+	const [emailStatus, setEmailStatus] = useState<EmailStatus>("idle");
+	const [emailError, setEmailError] = useState<string | null>(null);
+
+	const validEmail = isValidEmail(email);
+	const showValidationError = touched && !validEmail && email.length > 0;
+
+	const handleSubmit = async (e: React.FormEvent) => {
+		e.preventDefault();
+		setTouched(true);
+		if (!validEmail) return;
+
+		const webhookUrl = process.env.NEXT_PUBLIC_WEBHOOK_URL;
+		if (!webhookUrl) {
+			setEmailError(
+				"Submission endpoint not configured. Please contact support.",
+			);
+			return;
+		}
+
+		setEmailStatus("sending");
+		setEmailError(null);
+
+		try {
+			await axios.post(webhookUrl, { email: email.trim(), callId });
+			setEmailStatus("sent");
+			onSuccess();
+		} catch {
+			setEmailStatus("error");
+			setEmailError("Something went wrong. Please try again.");
+		}
+	};
+
+	if (emailStatus === "sent") {
+		return (
+			<div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 text-center space-y-3">
+				<CheckCircle className="mx-auto w-8 h-8" style={{ color: "#0EA5A0" }} />
+				<p className="text-sm font-medium" style={{ color: "#1B3A6B" }}>
+					Email received
+				</p>
+				<p className="text-sm" style={{ color: "#6B7280" }}>
+					Our team will follow up with you at <strong>{email}</strong>.
+				</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 space-y-4">
+			{/* Header */}
+			<div className="flex items-start gap-3">
+				<div
+					className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
+					style={{ backgroundColor: "#EFF6FF" }}>
+					<Mail className="w-4 h-4" style={{ color: "#1B3A6B" }} />
+				</div>
+				<div>
+					<p className="text-sm font-semibold" style={{ color: "#1B3A6B" }}>
+						Share your email address
+					</p>
+					<p
+						className="mt-0.5 text-xs leading-relaxed"
+						style={{ color: "#6B7280" }}>
+						We weren&apos;t able to capture your email via voice. Enter it below
+						and our team will follow up.
+					</p>
+				</div>
+			</div>
+
+			{/* Form */}
+			<form onSubmit={handleSubmit} noValidate className="space-y-3">
+				<div className="space-y-1">
+					<input
+						type="email"
+						value={email}
+						onChange={(e) => setEmail(e.target.value)}
+						onBlur={() => setTouched(true)}
+						placeholder="you@company.com"
+						autoComplete="email"
+						className={cn(
+							"w-full rounded-lg border px-3.5 py-2.5 text-sm outline-none transition-colors",
+							showValidationError
+								? "border-red-300 focus:border-red-400 focus:ring-1 focus:ring-red-300"
+								: "border-gray-200 focus:border-[#1B3A6B] focus:ring-1 focus:ring-[#1B3A6B]",
+						)}
+						style={{ color: "#111827" }}
+						disabled={emailStatus === "sending"}
+					/>
+					{showValidationError && (
+						<p className="text-xs" style={{ color: "#DC2626" }}>
+							Please enter a valid email address.
+						</p>
+					)}
+					{emailError && (
+						<p className="text-xs" style={{ color: "#DC2626" }}>
+							{emailError}
+						</p>
+					)}
+				</div>
+
+				<button
+					type="submit"
+					disabled={emailStatus === "sending"}
+					className="w-full rounded-lg py-2.5 text-sm font-medium text-white transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+					style={{ backgroundColor: "#1B3A6B" }}
+					onMouseEnter={(e) =>
+						emailStatus !== "sending" &&
+						((e.currentTarget as HTMLButtonElement).style.backgroundColor =
+							"#15305E")
+					}
+					onMouseLeave={(e) =>
+						((e.currentTarget as HTMLButtonElement).style.backgroundColor =
+							"#1B3A6B")
+					}>
+					{emailStatus === "sending" ? "Sending..." : "Submit Email"}
+				</button>
+			</form>
+		</div>
+	);
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function VoiceAgent() {
@@ -143,6 +286,9 @@ export default function VoiceAgent() {
 	const [isMuted, setIsMuted] = useState(false);
 	const [messages, setMessages] = useState<Message[]>([]);
 	const [error, setError] = useState<string | null>(null);
+	const [callId, setCallId] = useState<string | null>(null);
+	const [showEmailForm, setShowEmailForm] = useState(false);
+	const [emailSubmitted, setEmailSubmitted] = useState(false);
 	const scrollRef = useRef<HTMLDivElement>(null);
 
 	// Initialise VAPI once on mount
@@ -171,7 +317,8 @@ export default function VoiceAgent() {
 		vapi.on("speech-end", () => setAgentSpeaking(false));
 		vapi.on("volume-level", (v) => setVolume(v));
 
-		vapi.on("message", (msg: any) => {
+		vapi.on("message", (msg: VapiMessage) => {
+			// Transcript messages
 			if (msg.type === "transcript" && msg.transcriptType === "final") {
 				setMessages((prev) => [
 					...prev.slice(-19),
@@ -182,15 +329,45 @@ export default function VoiceAgent() {
 					},
 				]);
 			}
+
+			// Tool call: requestEmailFeedback (VAPI tool-calls format)
+			if (msg.type === "tool-calls") {
+				console.log("Tool call", msg);
+				const tools = msg.toolCallList ?? [];
+				const fallback = tools.find(
+					(t) => t.function?.name === "requestEmailFallback",
+				);
+
+				if (fallback) {
+					console.log("Tool call: requestEmailFallback");
+					setShowEmailForm(true);
+					vapi.send({
+						type: "add-message",
+						message: {
+							role: "tool",
+							toolCallId: callId,
+							content: "Email input field has been displayed to the user.",
+						},
+					});
+				}
+			}
+
+			// Tool call: requestEmailFeedback (VAPI function-call format, older versions)
+			if (
+				msg.type === "function-call" &&
+				msg.functionCall?.name === "requestEmailFallback"
+			) {
+				setShowEmailForm(true);
+			}
 		});
 
-		vapi.on("error", (err: any) => {
+		vapi.on("error", (err: unknown) => {
 			console.error("[VoiceAgent] error:", err);
 			setStatus("error");
 			setAgentSpeaking(false);
 			setVolume(0);
 			setError(
-				typeof err?.message === "string"
+				err instanceof Error
 					? err.message
 					: "An error occurred. Please try again.",
 			);
@@ -201,7 +378,7 @@ export default function VoiceAgent() {
 		};
 	}, []);
 
-	// Auto-scroll transcript to latest message
+	// Auto-scroll transcript
 	useEffect(() => {
 		if (scrollRef.current) {
 			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -225,13 +402,19 @@ export default function VoiceAgent() {
 		setMessages([]);
 		setError(null);
 		setIsMuted(false);
+		setShowEmailForm(false);
+		setEmailSubmitted(false);
+		setCallId(null);
 
 		try {
 			const call = await vapi.start(assistantId);
 			if (!call) {
 				setStatus("error");
 				setError("Failed to initiate call. Please try again.");
+				return;
 			}
+			// Store callId for use in the email submission payload
+			if (call.id) setCallId(call.id);
 		} catch {
 			setStatus("error");
 			setError(
@@ -283,7 +466,7 @@ export default function VoiceAgent() {
 				backgroundColor: "#F5F7FA",
 				fontFamily: "var(--font-sans, Inter, system-ui, sans-serif)",
 			}}>
-			{/* ── Header ────────────────────────────────────────────────────── */}
+			{/* ── Header ─────────────────────────────────────────────────────── */}
 			<header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
 				<RelayPayLogo />
 				<div
@@ -294,7 +477,7 @@ export default function VoiceAgent() {
 				</div>
 			</header>
 
-			{/* ── Main ──────────────────────────────────────────────────────── */}
+			{/* ── Main ───────────────────────────────────────────────────────── */}
 			<main className="flex flex-col flex-1 items-center justify-center gap-8 px-4 py-16">
 				{/* Heading */}
 				<div className="text-center space-y-2">
@@ -322,7 +505,7 @@ export default function VoiceAgent() {
 					{!isActive ? (
 						<button
 							onClick={startCall}
-							className="inline-flex items-center gap-2 rounded-lg px-7 py-3 text-sm font-medium text-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+							className="inline-flex items-center gap-2 rounded-lg px-7 py-3 text-sm font-medium text-white transition-colors"
 							style={{ backgroundColor: "#1B3A6B" }}
 							onMouseEnter={(e) =>
 								((e.currentTarget as HTMLButtonElement).style.backgroundColor =
@@ -341,7 +524,7 @@ export default function VoiceAgent() {
 								onClick={toggleMute}
 								disabled={status === "connecting"}
 								className={cn(
-									"inline-flex items-center gap-2 rounded-lg border px-5 py-3 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2",
+									"inline-flex items-center gap-2 rounded-lg border px-5 py-3 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
 									isMuted
 										? "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
 										: "border-gray-200 bg-white text-gray-700 hover:bg-gray-50",
@@ -356,13 +539,35 @@ export default function VoiceAgent() {
 
 							<button
 								onClick={endCall}
-								className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2">
+								className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-5 py-3 text-sm font-medium text-white transition-colors hover:bg-red-700">
 								<PhoneOff className="w-4 h-4" />
 								End Call
 							</button>
 						</>
 					)}
 				</div>
+
+				{/* Email capture — shown when VAPI fires requestEmailFeedback tool call */}
+				{showEmailForm && !emailSubmitted && (
+					<EmailCapture
+						callId={callId}
+						onSuccess={() => setEmailSubmitted(true)}
+					/>
+				)}
+				{emailSubmitted && (
+					<div className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 text-center space-y-2">
+						<CheckCircle
+							className="mx-auto w-7 h-7"
+							style={{ color: "#0EA5A0" }}
+						/>
+						<p className="text-sm font-medium" style={{ color: "#1B3A6B" }}>
+							Email submitted successfully
+						</p>
+						<p className="text-xs" style={{ color: "#6B7280" }}>
+							Our team will be in touch shortly.
+						</p>
+					</div>
+				)}
 
 				{/* Transcript */}
 				{messages.length > 0 && (
@@ -398,10 +603,10 @@ export default function VoiceAgent() {
 				)}
 			</main>
 
-			{/* ── Footer ────────────────────────────────────────────────────── */}
+			{/* ── Footer ─────────────────────────────────────────────────────── */}
 			<footer className="bg-white border-t border-gray-200 py-4 text-center">
 				<p className="text-xs" style={{ color: "#9CA3AF" }}>
-					<span>&copy; {new Date().getFullYear()} </span> RelayPay &middot; All
+					<span>&copy; {new Date().getFullYear()}</span> RelayPay &middot; All
 					conversations are private and secure
 				</p>
 			</footer>
