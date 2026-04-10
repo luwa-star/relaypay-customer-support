@@ -150,9 +150,11 @@ function Orb({
 function EmailCapture({
 	callId,
 	onSuccess,
+	onEmailConfirmed,
 }: {
 	callId: string | null;
 	onSuccess: () => void;
+	onEmailConfirmed: (email: string) => void;
 }) {
 	const [email, setEmail] = useState("");
 	const [touched, setTouched] = useState(false);
@@ -180,6 +182,7 @@ function EmailCapture({
 
 		try {
 			await axios.post(webhookUrl, { email: email.trim(), callId });
+			onEmailConfirmed(email.trim());
 			setEmailStatus("sent");
 			onSuccess();
 		} catch {
@@ -552,6 +555,20 @@ export default function VoiceAgent() {
 					<EmailCapture
 						callId={callId}
 						onSuccess={() => setEmailSubmitted(true)}
+						onEmailConfirmed={(val) => {
+							vapiRef.current?.send({
+								type: "add-message",
+								message: {
+									role: "user",
+									content: `My email address is ${val}`,
+								},
+							});
+
+							//programmatically close the chat after closing statement from Vapi
+							setTimeout(() => {
+								vapiRef.current?.stop();
+							}, 12000); // 12 seconds —
+						}}
 					/>
 				)}
 				{emailSubmitted && (
